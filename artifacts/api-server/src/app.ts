@@ -2,6 +2,7 @@ import express, { type Express, type Request, type Response, type NextFunction }
 import cors from "cors";
 import router from "./routes/index.js";
 import { authMiddleware } from "./middleware/authMiddleware.js";
+import publicImagesRouter from "./routes/publicImages.js";
 
 function buildAllowedOrigins(): string[] {
   const origins: string[] = [
@@ -95,6 +96,9 @@ app.use(
   })
 );
 app.use(express.urlencoded({ extended: true }));
+
+// Public image routes — mounted BEFORE authMiddleware so Facebook can fetch them
+app.use(publicImagesRouter);
 
 app.use(authMiddleware);
 app.use("/api", apiRateLimit, router);
