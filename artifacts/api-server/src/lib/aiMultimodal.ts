@@ -9,7 +9,7 @@ import {
   productsTable,
   availableSlotsTable,
 } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc, asc } from "drizzle-orm";
 import { cache } from "./cache.js";
 import { decrypt } from "./encryption.js";
 import { detectApiFormat, callWithFormat, resolveProviderType } from "./apiTransformer.js";
@@ -528,83 +528,77 @@ export function matchProductsFromAnalysis(
 }
 
 // ── buildPriorityList: ordered list of MultimodalContexts to try ──────────────
-// Active provider first (respects user config), Gemini AI Studio as fallback.
+// Mirrors callAIWithMetadata: queries ALL enabled providers (isEnabled=1),
+// orders active provider first (isActive=1 → DESC), then by priority ASC.
 // Skips providers that don't support the requested attachment type.
-// Avoids duplicate contexts when active provider IS Gemini AI Studio.
 async function buildPriorityList(
   attachmentType: "image" | "audio" | "video",
 ): Promise<MultimodalContext[]> {
   const contexts: MultimodalContext[] = [];
-  let activeIsGeminiAiStudio = false;
 
-  // ── 1. Active provider ────────────────────────────────────────────────────
-  const [activeProvider] = await db
+  // Same query style as callAIWithMetadata — isEnabled=1, active first
+  const enabledProviders = await db
     .select().from(aiProvidersTable)
-    .where(eq(aiProvidersTable.isActive, 1)).limit(1);
+    .where(eq(aiProvidersTable.isEnabled, 1))
+    .orderBy(desc(aiProvidersTable.isActive), asc(aiProvidersTable.priority));
 
-  if (activeProvider) {
-    const apiKey      = decrypt(activeProvider.apiKey);
-    const rawTypeKey  = activeProvider.providerType.toLowerCase().replace(/\s+/g, "");
-    const pUrl        = (activeProvider.baseUrl ?? "").toLowerCase();
-    const resolvedType = resolveProviderType(activeProvider.providerType.toLowerCase(), pUrl);
-    const caps        = getProviderCapabilities(
+  console.log(`[buildPriorityList] attachmentType=${attachmentType} enabledProviders=${enabledProviders.length}`);
+
+  for (const provider of enabledProviders) {
+    const apiKey = decrypt(provider.apiKey);
+    if (!apiKey) continue;
+
+    const rawTypeKey   = provider.providerType.toLowerCase().replace(/\s+/g, "");
+    const pUrl         = (provider.baseUrl ?? "").toLowerCase();
+    const resolvedType = resolveProviderType(provider.providerType.toLowerCase(), pUrl);
+    const caps         = getProviderCapabilities(
       rawTypeKey === "vertexai" ? "vertexai" : resolvedType,
     );
 
-    const needsAudio = attachmentType === "audio";
+    const needsAudio   = attachmentType === "audio";
     const supportsThis = needsAudio ? caps.supportsAudio : caps.supportsImage;
-    const format = needsAudio ? caps.audioFormat : caps.imageFormat;
+    const format       = needsAudio ? caps.audioFormat   : caps.imageFormat;
 
-    if (supportsThis && format && apiKey) {
-      if (format === "vertex") {
-        const vertexConfig = parseVertexConfig(apiKey, activeProvider.baseUrl, activeProvider.modelName);
-        contexts.push({ endpoint: "", apiKey, model: activeProvider.modelName, format: "vertex", vertexConfig });
+    console.log(`[buildPriorityList] ${provider.name} isActive=${provider.isActive} rawTypeKey=${rawTypeKey} supportsThis=${supportsThis} format=${format}`);
 
-      } else if (format === "gemini-inline") {
-        activeIsGeminiAiStudio = true; // same protocol — avoid duplicate
-        const model = attachmentType === "image"
-          ? activeProvider.modelName
-          : activeProvider.modelName.includes("lite") ? "gemini-2.0-flash" : activeProvider.modelName;
-        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-        contexts.push({ endpoint, apiKey, model, format: "gemini-inline" });
+    if (!supportsThis || !format) continue;
 
-      } else if (format === "whisper") {
-        const cleanBase = (activeProvider.baseUrl ?? "https://api.openai.com").replace(/\/$/, "");
-        contexts.push({
-          endpoint: `${cleanBase}/v1/audio/transcriptions`,
-          apiKey,
-          model: activeProvider.modelName,
-          format: "whisper",
-          whisperModel: caps.whisperModel ?? "whisper-1",
-        });
+    if (format === "vertex") {
+      const vertexConfig = parseVertexConfig(apiKey, provider.baseUrl, provider.modelName);
+      contexts.push({ endpoint: "", apiKey, model: provider.modelName, format: "vertex", vertexConfig });
 
-      } else if (format === "anthropic") {
-        const base = activeProvider.baseUrl
-          ? activeProvider.baseUrl.replace(/\/$/, "")
-          : "https://api.anthropic.com";
-        contexts.push({ endpoint: `${base}/v1/messages`, apiKey, model: activeProvider.modelName, format: "anthropic" });
-
-      } else if (format === "openai-vision") {
-        const cleanBase = (activeProvider.baseUrl ?? "https://api.openai.com").replace(/\/$/, "");
-        const skipV1    = resolvedType === "deepseek" || resolvedType === "gemini";
-        const ep        = skipV1 ? "/chat/completions" : "/v1/chat/completions";
-        contexts.push({ endpoint: `${cleanBase}${ep}`, apiKey, model: activeProvider.modelName, format: "openai-vision" });
-      }
-    }
-  }
-
-  // ── 2. Gemini AI Studio fallback (only if active provider is not already it) ─
-  if (!activeIsGeminiAiStudio) {
-    const gemini = await getGeminiCredentials();
-    if (gemini) {
+    } else if (format === "gemini-inline") {
       const model = attachmentType === "image"
-        ? gemini.model
-        : gemini.model.includes("lite") ? "gemini-2.0-flash" : gemini.model;
-      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${gemini.key}`;
-      contexts.push({ endpoint, apiKey: gemini.key, model, format: "gemini-inline" });
+        ? provider.modelName
+        : provider.modelName.includes("lite") ? "gemini-2.0-flash" : provider.modelName;
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      contexts.push({ endpoint, apiKey, model, format: "gemini-inline" });
+
+    } else if (format === "whisper") {
+      const cleanBase = (provider.baseUrl ?? "https://api.openai.com").replace(/\/$/, "");
+      contexts.push({
+        endpoint: `${cleanBase}/v1/audio/transcriptions`,
+        apiKey,
+        model: provider.modelName,
+        format: "whisper",
+        whisperModel: caps.whisperModel ?? "whisper-1",
+      });
+
+    } else if (format === "anthropic") {
+      const base = provider.baseUrl
+        ? provider.baseUrl.replace(/\/$/, "")
+        : "https://api.anthropic.com";
+      contexts.push({ endpoint: `${base}/v1/messages`, apiKey, model: provider.modelName, format: "anthropic" });
+
+    } else if (format === "openai-vision") {
+      const cleanBase = (provider.baseUrl ?? "https://api.openai.com").replace(/\/$/, "");
+      const skipV1    = resolvedType === "deepseek" || resolvedType === "gemini";
+      const ep        = skipV1 ? "/chat/completions" : "/v1/chat/completions";
+      contexts.push({ endpoint: `${cleanBase}${ep}`, apiKey, model: provider.modelName, format: "openai-vision" });
     }
   }
 
+  console.log(`[buildPriorityList] built ${contexts.length} contexts: ${contexts.map((c) => c.format).join(", ")}`);
   return contexts;
 }
 
@@ -661,6 +655,7 @@ export async function transcribeOrDescribeAttachment(
 
   // Step 3: Try each context in priority order — stop on first success
   const contexts = await buildPriorityList(attachmentType);
+  console.log(`[transcribe] contexts built: ${contexts.length} → ${contexts.map((c) => c.format).join(", ")}`);
 
   for (const ctx of contexts) {
     const text = await callMultimodal(ctx, buffer, mimeType, prompt, timeoutMs);

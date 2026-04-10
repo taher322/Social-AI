@@ -97,9 +97,11 @@ export async function callMultimodal(
           return null;
         }
         const base64 = Buffer.from(buffer).toString("base64");
+        console.log(`[callMultimodal] vertex calling with mimeType=${mimeType} bufferSize=${buffer.byteLength} model=${context.vertexConfig.modelName}`);
         const text   = await callVertexAiMultimodal(
           context.vertexConfig, prompt, base64, mimeType, timeoutMs,
         );
+        console.log(`[callMultimodal] vertex returned: "${String(text).substring(0, 80)}"`);
         return text?.trim() || null;
       }
 
