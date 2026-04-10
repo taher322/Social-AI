@@ -175,14 +175,24 @@ export async function buildSystemPrompt(
     : "Use a balanced, friendly, and clear tone suitable for everyone.";
 
   const countryDialect: Record<string, string> = {
-    Algeria:
-      "If the user writes in Algerian Darija or a French/Arabic mix, respond naturally in that same style.",
+    Algeria: `ALGERIAN DIALECT HANDLING — CRITICAL:
+You are serving Algerian customers. They may write in Darija (دارجة جزائرية), Classical Arabic (فصحى), French, or a French/Arabic mix. Always respond in the EXACT same language/style the customer uses — never switch to formal Arabic if they wrote in Darija.
+
+ALGERIAN DARIJA VOCABULARY (recognize and use naturally):
+واش = هل / هل يوجد | كيفاش = كيف | بزاف = كثيراً/جداً | راني / رانا = أنا/نحن | نتاع = الخاص بـ | قداش / شحال = كم/كم السعر | ماشي = لا/ليس | يصح / واخا = حسناً/موافق | تبغي = تريد | دابا = الآن | وين = أين | مزيان = جيد/ممتاز | يلاه = هيا | عندك = عندك/هل لديك | لوكان = لو | بكري = مبكراً | سير = اذهب | خويا = أخي | صحيح = صحيح | هادا/هاذا = هذا | هاذي = هذه | فيها = فيها | علاش = لماذا | كاين/كاينة = موجود/ة
+
+COMMON ALGERIAN CUSTOMER QUESTIONS — understand and answer naturally:
+"واش كاين؟" → هل هو متوفر؟ | "قداش التمن/السعر؟" → كم السعر؟ | "كيفاش نطلب؟" → كيف أطلب؟ | "واش كاين ليفريزون/توصيل؟" → هل يوجد توصيل؟ | "كيفاش ندفع؟" → كيف أدفع؟ | "واش يجي فالوقت؟" → هل يصل في الوقت؟ | "واش هو ورانتي؟" → هل يوجد ضمان؟ | "وين تتبعتوا؟" → أين موقعكم؟
+
+FRENCH-ARABIC MIX: If the customer mixes French words (merci, c'est combien, livraison, disponible, je veux, c'est bon), respond naturally in the same mixed style. Example: if they say "واش disponible?" reply with "نعم disponible, voilà les détails:".
+
+WARM ALGERIAN CLOSINGS (use when appropriate): "إن شاء الله يعجبك", "مرحبا بيك", "في خدمتك دايما", "أي وقت تحتاج مساعدة رانا هنا".`,
     Morocco:
-      "If the user writes in Moroccan Darija, respond naturally in Darija.",
+      "If the user writes in Moroccan Darija, respond naturally in Darija. Recognize words like: واش، فين، بزاف، مزيان، آش، كيداير، علاش، هاد، ديال.",
     Egypt:
-      "If the user writes in Egyptian Arabic, respond naturally in Egyptian Arabic.",
+      "If the user writes in Egyptian Arabic, respond naturally in Egyptian Arabic. Recognize words like: إيه، عايز، إزيك، تمام، كويس، فين، امتى.",
     Tunisia:
-      "If the user writes in Tunisian Arabic, respond naturally in that dialect.",
+      "If the user writes in Tunisian Arabic, respond naturally in that dialect. Recognize words like: شنوة، علاش، وقتاش، بهي، موش، ياسر.",
   };
   const dialectLine = countryDialect[config.businessCountry ?? ""] ?? "";
 
