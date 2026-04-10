@@ -4,6 +4,7 @@ import sharp from "sharp";
 import { db, productsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { rDel } from "../lib/redisCache.js";
+import { callAIWithMetadata } from "../lib/ai.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -222,6 +223,32 @@ router.patch("/products/:id/stock", async (req, res): Promise<void> => {
 
   await rDel("products:available");
   res.json(updated);
+});
+
+// ── POST /api/products/summarize-description ──────────────────────────────────
+// Calls AI to extract key specs from a long product description.
+router.post("/api/products/summarize-description", async (req, res): Promise<void> => {
+  const { description } = req.body as { description?: string };
+  if (!description || description.trim().length < 20) {
+    res.status(400).json({ error: "الوصف قصير جداً أو فارغ" });
+    return;
+  }
+
+  const systemPrompt = `أنت مساعد متخصص في استخراج مواصفات المنتجات التقنية من الأوصاف الطويلة.
+مهمتك: استخرج المواصفات المهمة فقط من الوصف التالي وأعدها بشكل مختصر ومنظم لا يتجاوز 200 كلمة.
+ركز على: الرامات، المعالج، المساحة الداخلية، البطارية، الشاشة، الكاميرا، نظام التشغيل، الميزات الرئيسية.
+أعد النتيجة فقط دون مقدمة أو تعليق.`;
+
+  try {
+    const result = await callAIWithMetadata(
+      [{ role: "user", content: description }],
+      systemPrompt
+    );
+    res.json({ summary: result.text.trim() });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "فشل الاتصال بالذكاء الاصطناعي";
+    res.status(500).json({ error: msg });
+  }
 });
 
 export default router;

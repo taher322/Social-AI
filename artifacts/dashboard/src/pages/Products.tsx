@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
 import { motion, AnimatePresence } from "framer-motion";
-import { Package, Plus, Edit, Trash2, Star, X, Image as ImageIcon, Loader2, Minus, Tag, FolderOpen, ChevronRight, Folder, FolderPlus, Check, CheckSquare, Square, Pencil } from "lucide-react";
+import { Package, Plus, Edit, Trash2, Star, X, Image as ImageIcon, Loader2, Minus, Tag, FolderOpen, ChevronRight, Folder, FolderPlus, Check, CheckSquare, Square, Pencil, Sparkles } from "lucide-react";
 import { useListProducts, useDeleteProduct, useAdjustProductStock, Product } from "@workspace/api-client-react";
 import { createProductWithImages, updateProductWithImages } from "@/lib/api-overrides";
 import { toast } from "@/hooks/use-toast";
@@ -122,6 +122,31 @@ export default function Products() {
   const [files, setFiles] = useState<File[]>([]);
   const [existingImages, setExistingImages] = useState<string[]>([]);
   const [mainImageIndex, setMainImageIndex] = useState(0);
+  const [isSummarizing, setIsSummarizing] = useState(false);
+
+  const handleSummarize = async () => {
+    if (!formData.description.trim()) {
+      toast({ title: "الوصف فارغ", description: "أضف وصفاً أولاً ثم اضغط تلخيص", variant: "destructive" });
+      return;
+    }
+    setIsSummarizing(true);
+    try {
+      const res = await fetch(`${BASE}/api/products/summarize-description`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ description: formData.description }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "فشل التلخيص");
+      setFormData(prev => ({ ...prev, description: data.summary }));
+      toast({ title: "تم التلخيص", description: "تم استخراج المواصفات المهمة بنجاح" });
+    } catch (err: any) {
+      toast({ title: "خطأ", description: err.message, variant: "destructive" });
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
   const [isSaving, setIsSaving] = useState(false);
 
   // Categories management dialog
@@ -684,8 +709,28 @@ export default function Products() {
               </div>
 
               <div className="space-y-1.5">
-                <Label>الوصف</Label>
-                <Textarea value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} className="bg-muted/40 min-h-[100px]" placeholder="وصف المنتج ليفهمه البوت..." />
+                <div className="flex items-center justify-between">
+                  <Label>الوصف</Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleSummarize}
+                    disabled={isSummarizing || !formData.description.trim()}
+                    className="h-7 gap-1.5 text-xs border-violet-200 text-violet-700 hover:bg-violet-50 hover:text-violet-800 disabled:opacity-40"
+                  >
+                    {isSummarizing
+                      ? <><Loader2 className="h-3 w-3 animate-spin" />جاري التلخيص...</>
+                      : <><Sparkles className="h-3 w-3" />تلخيص بالذكاء الاصطناعي</>
+                    }
+                  </Button>
+                </div>
+                <Textarea
+                  value={formData.description}
+                  onChange={e => setFormData({...formData, description: e.target.value})}
+                  className="bg-muted/40 min-h-[100px]"
+                  placeholder="الصق الوصف الكامل هنا ثم اضغط &quot;تلخيص&quot; لاستخراج المواصفات تلقائياً..."
+                />
               </div>
 
               <div className="grid grid-cols-2 gap-4">
