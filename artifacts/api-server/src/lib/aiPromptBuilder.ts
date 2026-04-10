@@ -19,6 +19,29 @@ import { SALES_TRIGGER_CONTEXT, type SalesTriggerType } from "./aiSafetyFilters.
 type AiConfig = typeof aiConfigTable.$inferSelect;
 type Product  = typeof productsTable.$inferSelect;
 
+// ── Extract key specs from a structured Arabic product description ─────────────
+// Searches for labelled fields (الرامات، المساحة الداخلية، etc.) in any position.
+// Falls back to a 500-char snippet if no structured fields are found.
+function extractKeySpecs(desc: string): string {
+  const get = (label: string): string | null => {
+    const re = new RegExp(`${label}[:\\s\n]+([^\n]{1,90})`, "i");
+    const m  = desc.match(re);
+    return m ? m[1].trim() : null;
+  };
+  const specs: Array<string> = [];
+  const ram     = get("الرامات");       if (ram)     specs.push(`RAM: ${ram}`);
+  const storage = get("المساحة الداخلية"); if (storage) specs.push(`Storage: ${storage}`);
+  const cpu     = get("المعالج");       if (cpu)     specs.push(`CPU: ${cpu.substring(0, 60)}`);
+  const battery = get("السعة");         if (battery) specs.push(`Battery: ${battery}`);
+  const screen  = get("المقاس");        if (screen)  specs.push(`Screen: ${screen}`);
+  const cam     = get("الكاميرا الخلفية"); if (cam)  specs.push(`Camera: ${cam.substring(0, 70)}`);
+  const os      = get("نظام التشغيل");  if (os)      specs.push(`OS: ${os}`);
+  if (specs.length === 0) {
+    return desc.length > 500 ? desc.substring(0, 500) + "…" : desc;
+  }
+  return specs.join(" | ");
+}
+
 // ── Domain expertise hints injected into the system prompt ────────────────────
 const DOMAIN_EXPERTISE: Record<string, string> = {
   tech: "When discussing products, mention specs, compatibility, and warranty details.",
@@ -177,9 +200,7 @@ export async function buildSystemPrompt(
         p.stockQuantity <= p.lowStockThreshold
           ? ` (⚠️ Only ${p.stockQuantity} left!)`
           : ` (Stock: ${p.stockQuantity})`;
-      const shortDesc = p.description
-        ? (p.description.length > 300 ? p.description.substring(0, 300) + "…" : p.description)
-        : "";
+      const shortDesc = p.description ? extractKeySpecs(p.description) : "";
       return `- ${p.name}${shortDesc ? ": " + shortDesc : ""} | Price: ${priceStr}${stockWarning}`;
     })
     .join("\n");

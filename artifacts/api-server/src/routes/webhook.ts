@@ -623,6 +623,29 @@ router.post("/webhook", async (req, res): Promise<void> => {
       // ── Multi-Step Shopping Flow ──────────────────────────────────────────────
       const availableInStock = allProducts.filter((p) => p.status === "available" && p.stockQuantity > 0);
       const availableCategories = [...new Set(availableInStock.map((p: any) => p.category as string | null).filter((c): c is string => Boolean(c)))] as string[];
+      // Extract clean brand/top-level names (e.g. "Vivo/12000 الي 24000" → "Vivo")
+      const availableCategoryLabels = [...new Set(availableCategories.map((c) => {
+        const slash = c.indexOf("/");
+        return (slash > 0 ? c.substring(0, slash) : c).trim();
+      }))].filter(Boolean);
+
+      // Helper: match a product's category against a target using path-prefix logic
+      // so "Vivo" matches "Vivo/12000 الي 24000" etc.
+      const matchesCategoryTarget = (productCat: string | null | undefined, target: string): boolean => {
+        if (!productCat) return false;
+        const cat = productCat.toLowerCase();
+        const t   = target.toLowerCase().trim();
+        return cat === t || cat.startsWith(t + "/");
+      };
+      const matchesCatOrBrand = (p: typeof availableInStock[0], target: string): boolean => {
+        const t = target.toLowerCase().trim();
+        return (
+          matchesCategoryTarget(p.category, target) ||
+          (p.brand ?? "").toLowerCase().trim() === t ||
+          (p.name ?? "").toLowerCase().includes(t)
+        );
+      };
+
       let filteredProducts = availableInStock.slice(0, 30);
       let shoppingInstruction = "";
 
@@ -652,7 +675,7 @@ router.post("/webhook", async (req, res): Promise<void> => {
         const shopCacheKey    = `shopctx:${senderId}`;
         const currentContext  = (await rGet<ShoppingContext>(shopCacheKey)) ?? null;
         const currentCatProducts = currentContext?.activeCategory
-          ? availableInStock.filter((p) => p.category?.toLowerCase() === currentContext.activeCategory!.toLowerCase())
+          ? availableInStock.filter((p) => matchesCatOrBrand(p, currentContext.activeCategory!))
           : [];
         const availableBrandsOrTypes = [...new Set([
           ...currentCatProducts.map((p) => p.brand).filter(Boolean),
@@ -677,7 +700,7 @@ router.post("/webhook", async (req, res): Promise<void> => {
           .map((h) => `${h.sender === "user" ? "customer" : "bot"}: ${h.message.substring(0, 150)}`)
           .join("\n");
 
-        const shopCtx = await classifyShoppingIntent(messageText, currentContext, availableCategories, availableBrandsOrTypes, priceTiersDescription, recentMsgLines);
+        const shopCtx = await classifyShoppingIntent(messageText, currentContext, availableCategoryLabels, availableBrandsOrTypes, priceTiersDescription, recentMsgLines);
 
         const contextToStore: ShoppingContext = shopCtx.contextAction === "DROP"
           ? { ...shopCtx, activeCategory: null, filterType: null, priceTier: null, keywords: [] }
@@ -690,11 +713,18 @@ router.post("/webhook", async (req, res): Promise<void> => {
         await rSet(shopCacheKey, contextToStore, shopCtxTTL);
 
         const catProducts = shopCtx.activeCategory
-          ? availableInStock.filter((p) => p.category?.toLowerCase() === shopCtx.activeCategory!.toLowerCase())
+          ? availableInStock.filter((p) => matchesCatOrBrand(p, shopCtx.activeCategory!))
           : availableInStock;
 
         switch (shopCtx.step) {
           case "show_categories": {
+            // Anti-loop: if we already showed categories last turn, break out and list products directly
+            if (currentContext?.step === "show_categories") {
+              filteredProducts = availableInStock.slice(0, 20);
+              shoppingInstruction = `\n\nSHOPPING FLOW — SHOW ALL PRODUCTS:\nCustomer has already seen the category menu. Present all available products now as friendly cards with key specs and prices. Guide them to pick one or ask a specific question.\n`;
+              void logPlatformEvent("shopping_flow", senderId, `step=show_categories_loop_break cat=- filter=- tier=- kw=- sent=${filteredProducts.length}`);
+              break;
+            }
             await sendCatalogCategoryMenu(settings.pageAccessToken, senderId, settings.pageId ?? undefined);
             await saveConversation({ fbUserId: senderId, fbUserName: userName, fbProfileUrl: profileUrl, message: "🛍️ اختر الفئة التي تريد تصفحها:", sender: "bot" });
             void logPlatformEvent("shopping_flow", senderId, `step=show_categories cat=- filter=- tier=- kw=- direct`);
