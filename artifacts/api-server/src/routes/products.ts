@@ -227,7 +227,7 @@ router.patch("/products/:id/stock", async (req, res): Promise<void> => {
 
 // ── POST /api/products/summarize-description ──────────────────────────────────
 // Calls AI to extract key specs from a long product description.
-router.post("/api/products/summarize-description", async (req, res): Promise<void> => {
+router.post("/products/summarize-description", async (req, res): Promise<void> => {
   const { description } = req.body as { description?: string };
   if (!description || description.trim().length < 20) {
     res.status(400).json({ error: "الوصف قصير جداً أو فارغ" });
