@@ -69,6 +69,7 @@ timeoutMs = 20000
 ENCRYPTION_KEY = "fb-ai-agent-secret-key-32chars!!"
 APP_URL = "https://social-ai-lagrtaher.replit.app"
 JWT_SECRET = "8873a78b92d2b85e4fbc52c0c9e85a4a75be0d0fd52da4c6288d213f41d3f39fcb2651081b9fb0fdf59ef29d5a871a47"
+ADMIN_USERNAME = "admin"
 
 [nix]
 channel = "stable-25_05"
