@@ -15,6 +15,8 @@ import { decrypt } from "./encryption.js";
 import { detectApiFormat, callWithFormat, resolveProviderType } from "./apiTransformer.js";
 import { callVertexAi, callVertexAiMultimodal, parseVertexConfig } from "./vertexAi.js";
 import { callAIWithMetadata } from "./aiEngine.js";
+import { getProviderCapabilities } from "./providerCapabilities.js";
+import { callMultimodal, type MultimodalContext } from "./callMultimodal.js";
 
 type Product = typeof productsTable.$inferSelect;
 
@@ -525,41 +527,121 @@ export function matchProductsFromAnalysis(
   return { matches: top4.map((t) => t.product), tier: "multiple" };
 }
 
+// ── buildPriorityList: ordered list of MultimodalContexts to try ──────────────
+// Active provider first (respects user config), Gemini AI Studio as fallback.
+// Skips providers that don't support the requested attachment type.
+// Avoids duplicate contexts when active provider IS Gemini AI Studio.
+async function buildPriorityList(
+  attachmentType: "image" | "audio" | "video",
+): Promise<MultimodalContext[]> {
+  const contexts: MultimodalContext[] = [];
+  let activeIsGeminiAiStudio = false;
+
+  // ── 1. Active provider ────────────────────────────────────────────────────
+  const [activeProvider] = await db
+    .select().from(aiProvidersTable)
+    .where(eq(aiProvidersTable.isActive, 1)).limit(1);
+
+  if (activeProvider) {
+    const apiKey      = decrypt(activeProvider.apiKey);
+    const rawTypeKey  = activeProvider.providerType.toLowerCase().replace(/\s+/g, "");
+    const pUrl        = (activeProvider.baseUrl ?? "").toLowerCase();
+    const resolvedType = resolveProviderType(activeProvider.providerType.toLowerCase(), pUrl);
+    const caps        = getProviderCapabilities(
+      rawTypeKey === "vertexai" ? "vertexai" : resolvedType,
+    );
+
+    const needsAudio = attachmentType === "audio";
+    const supportsThis = needsAudio ? caps.supportsAudio : caps.supportsImage;
+    const format = needsAudio ? caps.audioFormat : caps.imageFormat;
+
+    if (supportsThis && format && apiKey) {
+      if (format === "vertex") {
+        const vertexConfig = parseVertexConfig(apiKey, activeProvider.baseUrl, activeProvider.modelName);
+        contexts.push({ endpoint: "", apiKey, model: activeProvider.modelName, format: "vertex", vertexConfig });
+
+      } else if (format === "gemini-inline") {
+        activeIsGeminiAiStudio = true; // same protocol — avoid duplicate
+        const model = attachmentType === "image"
+          ? activeProvider.modelName
+          : activeProvider.modelName.includes("lite") ? "gemini-2.0-flash" : activeProvider.modelName;
+        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+        contexts.push({ endpoint, apiKey, model, format: "gemini-inline" });
+
+      } else if (format === "whisper") {
+        const cleanBase = (activeProvider.baseUrl ?? "https://api.openai.com").replace(/\/$/, "");
+        contexts.push({
+          endpoint: `${cleanBase}/v1/audio/transcriptions`,
+          apiKey,
+          model: activeProvider.modelName,
+          format: "whisper",
+          whisperModel: caps.whisperModel ?? "whisper-1",
+        });
+
+      } else if (format === "anthropic") {
+        const base = activeProvider.baseUrl
+          ? activeProvider.baseUrl.replace(/\/$/, "")
+          : "https://api.anthropic.com";
+        contexts.push({ endpoint: `${base}/v1/messages`, apiKey, model: activeProvider.modelName, format: "anthropic" });
+
+      } else if (format === "openai-vision") {
+        const cleanBase = (activeProvider.baseUrl ?? "https://api.openai.com").replace(/\/$/, "");
+        const skipV1    = resolvedType === "deepseek" || resolvedType === "gemini";
+        const ep        = skipV1 ? "/chat/completions" : "/v1/chat/completions";
+        contexts.push({ endpoint: `${cleanBase}${ep}`, apiKey, model: activeProvider.modelName, format: "openai-vision" });
+      }
+    }
+  }
+
+  // ── 2. Gemini AI Studio fallback (only if active provider is not already it) ─
+  if (!activeIsGeminiAiStudio) {
+    const gemini = await getGeminiCredentials();
+    if (gemini) {
+      const model = attachmentType === "image"
+        ? gemini.model
+        : gemini.model.includes("lite") ? "gemini-2.0-flash" : gemini.model;
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${gemini.key}`;
+      contexts.push({ endpoint, apiKey: gemini.key, model, format: "gemini-inline" });
+    }
+  }
+
+  return contexts;
+}
+
 // ── transcribeOrDescribeAttachment: plain-text description of media for AI ────
 export async function transcribeOrDescribeAttachment(
   attachmentUrl: string,
   attachmentType: "image" | "audio" | "video",
-  pageAccessToken?: string
+  pageAccessToken?: string,
 ): Promise<string | null> {
-  // Step 1: Fetch media
-  let mediaBase64: string;
+  // Step 1: Fetch media → keep raw ArrayBuffer (conversion happens in callMultimodal)
+  let buffer: ArrayBuffer;
   let mimeType: string;
   try {
     const fetchUrl = pageAccessToken
       ? `${attachmentUrl}${attachmentUrl.includes("?") ? "&" : "?"}access_token=${pageAccessToken}`
       : attachmentUrl;
-    const resp = await fetch(fetchUrl, { signal: AbortSignal.timeout(15000) });
+    const resp = await fetch(fetchUrl, { signal: AbortSignal.timeout(15_000) });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const buffer = await resp.arrayBuffer();
+    buffer = await resp.arrayBuffer();
     if (buffer.byteLength > 15 * 1024 * 1024) {
       console.warn("[transcribe] Attachment too large (>15MB) — skipping");
       return null;
     }
-    mediaBase64 = Buffer.from(buffer).toString("base64");
     const ct = resp.headers.get("content-type") ?? "";
     if (attachmentType === "image") {
       mimeType = ct.startsWith("image/") ? ct.split(";")[0]!.trim() : "image/jpeg";
     } else if (attachmentType === "video") {
       const urlL = attachmentUrl.toLowerCase();
-      if (urlL.includes(".mp4")) mimeType = "video/mp4";
+      if (urlL.includes(".mp4"))       mimeType = "video/mp4";
       else if (urlL.includes(".webm")) mimeType = "video/webm";
-      else if (urlL.includes(".mov")) mimeType = "video/quicktime";
+      else if (urlL.includes(".mov"))  mimeType = "video/quicktime";
       else mimeType = ct.startsWith("video/") ? ct.split(";")[0]!.trim() : "video/mp4";
     } else {
       const urlL = attachmentUrl.toLowerCase();
-      if (urlL.includes(".m4a")) mimeType = "audio/m4a";
-      else if (urlL.includes(".mp3")) mimeType = "audio/mp3";
-      else if (urlL.includes(".wav")) mimeType = "audio/wav";
+      if (urlL.includes(".m4a"))       mimeType = "audio/m4a";
+      else if (urlL.includes(".mp3"))  mimeType = "audio/mp3";
+      else if (urlL.includes(".wav"))  mimeType = "audio/wav";
       else mimeType = ct.startsWith("audio/") ? ct.split(";")[0]!.trim() : "audio/ogg";
     }
   } catch (err) {
@@ -567,7 +649,7 @@ export async function transcribeOrDescribeAttachment(
     return null;
   }
 
-  // Step 2: Build natural-language prompt
+  // Step 2: Build prompt
   const prompt =
     attachmentType === "audio"
       ? "Transcribe this audio message exactly as spoken. The customer may be speaking Arabic or another language. Return ONLY the transcribed text, nothing else — no JSON, no labels, no explanation."
@@ -575,91 +657,18 @@ export async function transcribeOrDescribeAttachment(
       ? "Describe this image in Arabic in one or two concise sentences, focusing on what the customer is likely showing or asking about. Return ONLY the description text, nothing else."
       : "Briefly describe what is shown in this video in Arabic. Return ONLY the description text, nothing else.";
 
-  const timeoutMs = attachmentType === "image" ? 15000 : 25000;
+  const timeoutMs = attachmentType === "image" ? 15_000 : 25_000;
 
-  // Step 3a: Try Gemini AI Studio (API Key)
-  const gemini = await getGeminiCredentials();
-  if (gemini) {
-    const model = attachmentType === "image"
-      ? gemini.model
-      : gemini.model.includes("lite") ? "gemini-2.0-flash" : gemini.model;
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${gemini.key}`;
-    try {
-      const resp = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: mediaBase64 } }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 256 },
-        }),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (resp.ok) {
-        const data = (await resp.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-        const text = (data.candidates?.[0]?.content?.parts?.[0]?.text ?? "").trim();
-        if (text) {
-          console.log(`[transcribe] Gemini ${attachmentType} → "${text.substring(0, 80)}"`);
-          return text;
-        }
-      } else {
-        console.warn("[transcribe] Gemini failed:", resp.status, "→ trying active provider");
-      }
-    } catch (err) {
-      console.warn("[transcribe] Gemini error:", (err as Error).message, "→ trying active provider");
+  // Step 3: Try each context in priority order — stop on first success
+  const contexts = await buildPriorityList(attachmentType);
+
+  for (const ctx of contexts) {
+    const text = await callMultimodal(ctx, buffer, mimeType, prompt, timeoutMs);
+    if (text) {
+      console.log(`[transcribe] ${ctx.format} ${attachmentType} → "${text.substring(0, 80)}"`);
+      return text;
     }
-  }
-
-  // Step 3b: Fallback to active provider (Vertex AI / OpenAI-compatible)
-  {
-    const [activeProvider] = await db
-      .select().from(aiProvidersTable)
-      .where(eq(aiProvidersTable.isActive, 1)).limit(1);
-
-    if (activeProvider) {
-      const apiKey      = decrypt(activeProvider.apiKey);
-      const rawTypeKey  = activeProvider.providerType.toLowerCase().replace(/\s+/g, "");
-      const pUrl        = (activeProvider.baseUrl ?? "").toLowerCase();
-      const provType    = resolveProviderType(activeProvider.providerType.toLowerCase(), pUrl);
-
-      try {
-        if (rawTypeKey === "vertexai" && apiKey) {
-          const config = parseVertexConfig(apiKey, activeProvider.baseUrl, activeProvider.modelName);
-          const text = await callVertexAiMultimodal(config, prompt, mediaBase64, mimeType, timeoutMs);
-          if (text) {
-            console.log(`[transcribe] VertexAI ${attachmentType} → "${text.substring(0, 80)}"`);
-            return text.trim();
-          }
-        } else if ((provType === "openai" || provType === "gemini" || provType === "groq" || provType === "openrouter") && apiKey) {
-          if (attachmentType !== "audio") {
-            const cleanBase = (activeProvider.baseUrl ?? "https://api.openai.com").replace(/\/$/, "");
-            const skipV1    = provType === "gemini";
-            const ep        = skipV1 ? "/chat/completions" : "/v1/chat/completions";
-            const resp = await fetch(`${cleanBase}${ep}`, {
-              method: "POST",
-              headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-              body: JSON.stringify({
-                model: activeProvider.modelName, max_tokens: 256,
-                messages: [{ role: "user", content: [
-                  { type: "text", text: prompt },
-                  { type: "image_url", image_url: { url: `data:${mimeType};base64,${mediaBase64}` } },
-                ]}],
-              }),
-              signal: AbortSignal.timeout(timeoutMs),
-            });
-            if (resp.ok) {
-              const data = await resp.json() as { choices?: Array<{ message?: { content?: string } }> };
-              const text = (data.choices?.[0]?.message?.content ?? "").trim();
-              if (text) {
-                console.log(`[transcribe] ${provType} ${attachmentType} → "${text.substring(0, 80)}"`);
-                return text;
-              }
-            }
-          }
-        }
-      } catch (fbErr) {
-        console.error("[transcribe] Active provider fallback failed:", (fbErr as Error).message);
-      }
-    }
+    console.warn(`[transcribe] ${ctx.format} failed for ${attachmentType} — trying next`);
   }
 
   console.warn(`[transcribe] All providers failed for ${attachmentType}`);
