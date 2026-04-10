@@ -10,7 +10,8 @@
 - يُرجى الاستفسار قبل إجراء تغييرات معمارية كبرى أو إدخال تبعيات خارجية جديدة.
 - أُفضّل الشرح التفصيلي للمنطق المعقد أو قرارات التصميم.
 - أُفضّل لغة بسيطة وواضحة في التواصل.
-- لا تُعدّل `artifacts/api-server/src/lib/ai.ts` بدون نقاش مسبق.
+- `ai.ts` أصبح barrel file — لا تُضف كود مباشراً فيه. أضف في الملف الفرعي المناسب (aiEngine، aiPromptBuilder، aiMultimodal، إلخ).
+- لا تُعدّل الملفات الفرعية للـ AI (aiEngine، aiPromptBuilder، aiMultimodal) بدون نقاش مسبق للتغييرات الكبيرة.
 - لا تُعدّل `lib/db/src/schema/index.ts` بدون نقاش مسبق.
 
 ---
@@ -39,7 +40,13 @@
   - `src/lib/messengerUtils.ts` — sendFbQuickReplies، bufferMessage، getOrCreateSession
   - `src/lib/catalogFlow.ts` — sendDeliveryOptions، sendCatalogPage، sendCatalogCategoryMenu
   - `src/lib/orderFlow.ts` — handleProductPayload (كل تدفقات الطلبات)
-  - `src/lib/ai.ts` — منطق الذكاء الاصطناعي ومولد النظام prompt
+  - `src/lib/ai.ts` — Barrel re-export فقط (واجهة موحدة لكل ملفات AI)
+  - `src/lib/aiEngine.ts` — محرك مزودي AI: callAI، callAIWithMetadata، callAIWithLoadBalancing، retry logic
+  - `src/lib/aiPromptBuilder.ts` — بناء System Prompt: buildSystemPrompt، buildCommentSystemPrompt، isWithinBusinessHours
+  - `src/lib/aiMultimodal.ts` — تحليل الوسائط: analyzeAttachmentWithGemini، transcribeOrDescribeAttachment، classifyShoppingIntent، matchProductsFromAnalysis، summarizeProductForUser، getFreshAppointmentBlock
+  - `src/lib/aiParsers.ts` — محللات JSON: parseOrderAction، parseAppointmentAction، إلخ
+  - `src/lib/aiSafetyFilters.ts` — مرشحات الأمان: detectJailbreak، detectSalesTrigger، detectBookingIntent
+  - `src/lib/aiFbApi.ts` — واجهة Facebook API: sendFbMessage، sendFbImageMessage، getFbUserName، إلخ
   - `src/lib/vertexAi.ts` — مزود Vertex AI (callVertexAi، callVertexAiMultimodal، parseVertexConfig)
   - `src/lib/webhookAttachment.ts` — معالجة المرفقات (صور، صوت، فيديو)
   - `src/lib/cache.ts` — In-memory cache مع TTL
