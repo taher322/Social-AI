@@ -2,6 +2,7 @@
 // All Facebook Messenger/Graph API send functions and user-info helpers.
 // Extracted from ai.ts for clarity; re-exported via ai.ts for backward compat.
 
+import sharp from "sharp";
 import { TTL } from "./cache.js";
 import { rGet, rSet } from "./redisCache.js";
 
@@ -75,9 +76,16 @@ export async function sendFbImageFromDataUrl(
     // Base64 data URL → decode and upload via multipart
     const [meta, b64] = dataUrl.split(",") as [string, string];
     const mimeMatch = meta.match(/data:([^;]+)/);
-    const mime = mimeMatch?.[1] ?? "image/jpeg";
-    const ext  = mime.split("/")[1] ?? "jpg";
-    const buf  = Buffer.from(b64, "base64");
+    let mime = mimeMatch?.[1] ?? "image/jpeg";
+    let buf  = Buffer.from(b64, "base64");
+
+    // Facebook Messenger لا يدعم WebP/AVIF — نحوّله إلى JPEG قبل الإرسال
+    if (mime === "image/webp" || mime === "image/avif") {
+      buf  = await sharp(buf).jpeg({ quality: 85 }).toBuffer() as Buffer<ArrayBuffer>;
+      mime = "image/jpeg";
+    }
+
+    const ext = mime.split("/")[1] ?? "jpg";
 
     const form = new FormData();
     form.append("recipient",       JSON.stringify({ id: recipientId }));
