@@ -1,8 +1,10 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import cors from "cors";
+import sharp from "sharp";
 import router from "./routes/index.js";
 import { authMiddleware } from "./middleware/authMiddleware.js";
-import publicImagesRouter from "./routes/publicImages.js";
+import { db, productsTable, broadcastsTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
 
 function buildAllowedOrigins(): string[] {
   const origins: string[] = [
@@ -10,12 +12,10 @@ function buildAllowedOrigins(): string[] {
     "http://localhost:5173",
   ];
 
-  // Primary: APP_URL — works in any environment
   if (process.env["APP_URL"]) {
     origins.push(process.env["APP_URL"].replace(/\/$/, ""));
   }
 
-  // Additional origins — comma-separated list for multi-domain setups
   if (process.env["ALLOWED_ORIGINS"]) {
     process.env["ALLOWED_ORIGINS"]
       .split(",")
@@ -24,7 +24,6 @@ function buildAllowedOrigins(): string[] {
       .forEach((o) => origins.push(o.replace(/\/$/, "")));
   }
 
-  // Fallback: Replit-specific (only active when deployed on Replit)
   if (process.env["REPLIT_DOMAINS"]) {
     process.env["REPLIT_DOMAINS"]
       .split(",")
@@ -42,9 +41,6 @@ function buildAllowedOrigins(): string[] {
 
 const ALLOWED_ORIGINS = buildAllowedOrigins();
 
-// ── Dashboard API rate limiting — 200 req/min per IP ─────────────────────────
-// Protects non-webhook API routes from flooding. The webhook has its own
-// IP-based rate limiter (checkWebhookRequestRate in rateLimit.ts).
 const dashboardLimiter = new Map<string, number[]>();
 const DASHBOARD_MAX       = 200;
 const DASHBOARD_WINDOW_MS = 60 * 1000;
@@ -97,8 +93,73 @@ app.use(
 );
 app.use(express.urlencoded({ extended: true }));
 
-// Public image routes — mounted BEFORE authMiddleware so Facebook can fetch them
-app.use(publicImagesRouter);
+// ── Public image routes — NO auth required ────────────────────────────────────
+// Registered directly on the app BEFORE authMiddleware so Facebook's servers
+// can fetch product/broadcast images without any token.
+
+app.get("/api/products/image/:id/:index", async (req: Request, res: Response): Promise<void> => {
+  const id    = parseInt(req.params["id"]!,    10);
+  const index = parseInt(req.params["index"] ?? "0", 10);
+  if (Number.isNaN(id) || Number.isNaN(index)) { res.status(400).end(); return; }
+
+  const [product] = await db
+    .select({ images: productsTable.images })
+    .from(productsTable)
+    .where(eq(productsTable.id, id))
+    .limit(1);
+
+  if (!product?.images) { res.status(404).end(); return; }
+
+  const imgs    = JSON.parse(product.images) as string[];
+  const dataUrl = imgs[index] ?? imgs[0];
+  if (!dataUrl) { res.status(404).end(); return; }
+
+  if (dataUrl.startsWith("data:")) {
+    const [, b64] = dataUrl.split(",") as [string, string];
+    const raw = Buffer.from(b64, "base64");
+    let buf: Buffer;
+    try {
+      buf = await sharp(raw).jpeg({ quality: 85 }).toBuffer();
+    } catch {
+      buf = raw;
+    }
+    res.set("Content-Type", "image/jpeg");
+    res.set("Cache-Control", "public, max-age=86400");
+    res.send(buf);
+  } else {
+    res.redirect(302, dataUrl);
+  }
+});
+
+app.get("/api/broadcasts/image/:id", async (req: Request, res: Response): Promise<void> => {
+  const id = Number(req.params["id"]);
+  const [broadcast] = await db
+    .select({ imageUrl: broadcastsTable.imageUrl })
+    .from(broadcastsTable)
+    .where(eq(broadcastsTable.id, id))
+    .limit(1);
+
+  if (!broadcast?.imageUrl) { res.status(404).end(); return; }
+
+  const dataUrl = broadcast.imageUrl;
+  if (dataUrl.startsWith("data:")) {
+    const [, b64] = dataUrl.split(",") as [string, string];
+    const raw = Buffer.from(b64, "base64");
+    let buf: Buffer;
+    try {
+      buf = await sharp(raw).jpeg({ quality: 85 }).toBuffer();
+    } catch {
+      buf = raw;
+    }
+    res.set("Content-Type", "image/jpeg");
+    res.set("Cache-Control", "public, max-age=86400");
+    res.send(buf);
+  } else {
+    res.redirect(302, dataUrl);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 app.use(authMiddleware);
 app.use("/api", apiRateLimit, router);
