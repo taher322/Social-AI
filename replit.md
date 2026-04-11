@@ -39,6 +39,7 @@
   - `src/lib/dbHelpers.ts` — دوال DB: getSettings، getConfig، isUserPaused، saveConversation
   - `src/lib/messengerUtils.ts` — sendFbQuickReplies، bufferMessage، getOrCreateSession
   - `src/lib/catalogFlow.ts` — sendDeliveryOptions، sendCatalogPage، sendCatalogCategoryMenu
+    - **منطق الصور (3 مراحل):** 1) رابط CDN مخزّن في `fb_image_url` → 2) رفع الصورة لـ CDN عبر `uploadDataUrlToFbCdn` وتخزين الرابط → 3) Fallback بإرسال الصورة كرسالة منفصلة إذا فشل الرفع
   - `src/lib/orderFlow.ts` — handleProductPayload (كل تدفقات الطلبات)
   - `src/lib/ai.ts` — Barrel re-export فقط (واجهة موحدة لكل ملفات AI)
   - `src/lib/aiEngine.ts` — محرك مزودي AI: callAI، callAIWithMetadata، callAIWithLoadBalancing، retry logic
@@ -46,7 +47,7 @@
   - `src/lib/aiMultimodal.ts` — تحليل الوسائط: analyzeAttachmentWithGemini، transcribeOrDescribeAttachment، classifyShoppingIntent، matchProductsFromAnalysis، summarizeProductForUser، getFreshAppointmentBlock
   - `src/lib/aiParsers.ts` — محللات JSON: parseOrderAction، parseAppointmentAction، إلخ
   - `src/lib/aiSafetyFilters.ts` — مرشحات الأمان: detectJailbreak، detectSalesTrigger، detectBookingIntent
-  - `src/lib/aiFbApi.ts` — واجهة Facebook API: sendFbMessage، sendFbImageMessage، getFbUserName، إلخ
+  - `src/lib/aiFbApi.ts` — واجهة Facebook API: sendFbMessage، sendFbImageMessage، getFbUserName، **uploadDataUrlToFbCdn** (ترفع صورة كـ data URL لـ CDN فيسبوك وتُرجع رابطاً عاماً)، إلخ
   - `src/lib/vertexAi.ts` — مزود Vertex AI (callVertexAi، callVertexAiMultimodal، parseVertexConfig)
   - `src/lib/webhookAttachment.ts` — معالجة المرفقات (صور، صوت، فيديو)
   - `src/lib/cache.ts` — In-memory cache مع TTL
@@ -117,6 +118,7 @@
 - جدول `productCategoriesTable`
 - اختيار متعدد للتصنيفات
 - **نظام المجلدات**: جدول `product_folders` + حقل `folderId` في المنتجات + tabs تصفية + bulk-assign
+- **حقل `fb_image_url`**: مخزّن في جدول `products` — يُحفظ فيه رابط CDN فيسبوك بعد أول رفع لتجنب إعادة الرفع في كل طلب
 
 ### 6. نظام المواعيد (Appointments)
 - حجز مواعيد مع خانات زمنية قابلة للضبط
@@ -222,7 +224,7 @@
 | `fb_settings` | إعدادات الصفحة والتكامل |
 | `ai_config` | إعدادات الذكاء الاصطناعي والـ System Prompt |
 | `ai_providers` | مزودو الذكاء الاصطناعي وأولوياتهم |
-| `products` | كتالوج المنتجات (يشمل folderId) |
+| `products` | كتالوج المنتجات (يشمل folderId + fb_image_url لتخزين رابط CDN فيسبوك) |
 | `product_categories` | تصنيفات المنتجات الهرمية |
 | `product_folders` | مجلدات تنظيم المنتجات |
 | `conversations` | سجل المحادثات الكامل |
