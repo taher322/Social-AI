@@ -5,7 +5,7 @@ export interface AuthenticatedRequest extends Request {
   user?: { id: number; username: string };
 }
 
-const PUBLIC_PREFIXES = ["/api/webhook", "/api/auth", "/api/notifications/stream", "/api/products/image", "/api/broadcasts/image"];
+const PUBLIC_PREFIXES = ["/api/webhook", "/api/auth", "/api/notifications/stream", "/api/products/image", "/api/broadcasts/image", "/api/healthz"];
 
 export function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
   const fullPath = req.originalUrl.split("?")[0] ?? "";
