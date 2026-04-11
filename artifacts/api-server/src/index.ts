@@ -280,9 +280,49 @@ async function start() {
   setInterval(runPlatformEventsCleanup, 24 * 60 * 60 * 1000);
   console.log("[server] Platform events cleanup job scheduled (every 24h, keeps last 30 days)");
 
+  async function serveImageDataUrl(
+    dataUrl: string,
+    res: import("http").ServerResponse,
+  ): Promise<void> {
+    const commaIdx = dataUrl.indexOf(",");
+    if (commaIdx === -1) { res.writeHead(400); res.end(); return; }
+    const meta = dataUrl.slice(0, commaIdx);
+    const b64  = dataUrl.slice(commaIdx + 1);
+    const raw  = Buffer.from(b64, "base64");
+
+    const mime = (meta.match(/data:([^;]+)/) ?? [])[1] ?? "";
+    const needsConvert = mime !== "image/jpeg" && mime !== "image/jpg";
+
+    let buf: Buffer;
+    if (needsConvert) {
+      try {
+        buf = await sharp(raw).jpeg({ quality: 85 }).toBuffer();
+        console.log(`[image-server] converted ${mime || "unknown"} → jpeg (${buf.length} bytes)`);
+      } catch (e) {
+        console.warn("[image-server] sharp conversion failed, trying anyway:", e);
+        try { buf = await sharp(raw).toBuffer(); } catch { buf = raw; }
+      }
+    } else {
+      try { buf = await sharp(raw).jpeg({ quality: 85 }).toBuffer(); }
+      catch  { buf = raw; }
+    }
+
+    res.writeHead(200, {
+      "Content-Type":  "image/jpeg",
+      "Cache-Control": "public, max-age=86400",
+    });
+    res.end(buf);
+  }
+
   const server = http.createServer(async (req, res) => {
     const rawUrl  = req.url ?? "/";
     const urlPath = rawUrl.split("?")[0]!;
+
+    if ((urlPath === "/api/healthz" || urlPath === "/healthz") && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end('{"status":"ok"}');
+      return;
+    }
 
     const productMatch = urlPath.match(/^\/api\/products\/image\/(\d+)\/(\d+)$/);
     if (productMatch && req.method === "GET") {
@@ -299,16 +339,7 @@ async function start() {
         const dataUrl = imgs[index] ?? imgs[0];
         if (!dataUrl) { res.writeHead(404); res.end(); return; }
         if (dataUrl.startsWith("data:")) {
-          const [, b64] = dataUrl.split(",") as [string, string];
-          const raw = Buffer.from(b64, "base64");
-          let buf: Buffer;
-          try { buf = await sharp(raw).jpeg({ quality: 85 }).toBuffer(); }
-          catch { buf = raw; }
-          res.writeHead(200, {
-            "Content-Type":  "image/jpeg",
-            "Cache-Control": "public, max-age=86400",
-          });
-          res.end(buf);
+          await serveImageDataUrl(dataUrl, res);
         } else {
           res.writeHead(302, { Location: dataUrl });
           res.end();
@@ -332,16 +363,7 @@ async function start() {
         if (!broadcast?.imageUrl) { res.writeHead(404); res.end(); return; }
         const dataUrl = broadcast.imageUrl;
         if (dataUrl.startsWith("data:")) {
-          const [, b64] = dataUrl.split(",") as [string, string];
-          const raw = Buffer.from(b64, "base64");
-          let buf: Buffer;
-          try { buf = await sharp(raw).jpeg({ quality: 85 }).toBuffer(); }
-          catch { buf = raw; }
-          res.writeHead(200, {
-            "Content-Type":  "image/jpeg",
-            "Cache-Control": "public, max-age=86400",
-          });
-          res.end(buf);
+          await serveImageDataUrl(dataUrl, res);
         } else {
           res.writeHead(302, { Location: dataUrl });
           res.end();
