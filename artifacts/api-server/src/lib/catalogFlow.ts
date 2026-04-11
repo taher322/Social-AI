@@ -1,3 +1,4 @@
+import sharp from "sharp";
 import { db, productsTable, deliveryPricesTable, aiConfigTable, productCategoriesTable } from "@workspace/db";
 import { eq, and, or, isNull, sql } from "drizzle-orm";
 import { sendFbMessage, sendFbGenericTemplate } from "./ai.js";
@@ -190,6 +191,29 @@ export async function sendCatalogPage(
 
   const appUrl = getAppBaseUrl();
   const PLACEHOLDER = "https://placehold.co/400x400/f8fafc/94a3b8?text=No+Image";
+
+  for (const p of matching) {
+    if (!p.images) continue;
+    try {
+      const imgs = JSON.parse(p.images) as string[];
+      const idx = p.mainImageIndex ?? 0;
+      const dataUrl = imgs[idx];
+      if (dataUrl?.startsWith("data:") && !dataUrl.startsWith("data:image/jpeg")) {
+        const [meta, b64] = dataUrl.split(",") as [string, string];
+        const mimeMatch = meta.match(/data:([^;]+)/);
+        const mime = mimeMatch?.[1] ?? "image/webp";
+        const raw = Buffer.from(b64, "base64");
+        const jpegBuf = await sharp(raw).jpeg({ quality: 85 }).toBuffer() as Buffer<ArrayBuffer>;
+        const jpegDataUrl = `data:image/jpeg;base64,${jpegBuf.toString("base64")}`;
+        imgs[idx] = jpegDataUrl;
+        await db.update(productsTable).set({ images: JSON.stringify(imgs) }).where(eq(productsTable.id, p.id));
+        p.images = JSON.stringify(imgs);
+        console.log(`[catalogFlow] Converted product ${p.id} image from ${mime} → jpeg before sending`);
+      }
+    } catch (e) {
+      console.warn("[catalogFlow] Image conversion failed for product", p.id, (e as Error).message);
+    }
+  }
 
   const elements = matching.map((p) => {
     const price    = p.discountPrice ?? p.originalPrice;
