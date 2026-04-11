@@ -5,9 +5,10 @@ import { eq } from "drizzle-orm";
 
 const router: IRouter = Router();
 
-// ── GET /api/products/image/:id/:index ─────────────────────────────────────────
-// Public — no auth. Facebook/Messenger fetches product card images from here.
-router.get("/api/products/image/:id/:index", async (req, res): Promise<void> => {
+// ── Product image handler ──────────────────────────────────────────────────────
+// Registered on both /api/products/image/:id/:index and /products/image/:id/:index
+// to handle proxies that may or may not strip the /api prefix.
+async function serveProductImage(req: import("express").Request, res: import("express").Response): Promise<void> {
   const id    = parseInt(req.params["id"]!,    10);
   const index = parseInt(req.params["index"] ?? "0", 10);
   if (Number.isNaN(id) || Number.isNaN(index)) { res.status(400).end(); return; }
@@ -22,20 +23,15 @@ router.get("/api/products/image/:id/:index", async (req, res): Promise<void> => 
 
   const imgs    = JSON.parse(product.images) as string[];
   const dataUrl = imgs[index] ?? imgs[0];
-  if (!dataUrl)           { res.status(404).end(); return; }
+  if (!dataUrl) { res.status(404).end(); return; }
 
   if (dataUrl.startsWith("data:")) {
     const [, b64] = dataUrl.split(",") as [string, string];
     const raw = Buffer.from(b64, "base64");
-
-    // Always convert to JPEG — Facebook Messenger requires JPEG for card images.
-    // This also handles images stored with a wrong mime prefix (e.g. declared as
-    // image/jpeg but actually WebP binary), which would cause broken images.
     let buf: Buffer;
     try {
       buf = await sharp(raw).jpeg({ quality: 85 }).toBuffer();
     } catch {
-      // sharp failed (unsupported format) — serve the raw buffer as-is
       buf = raw;
     }
     res.set("Content-Type", "image/jpeg");
@@ -44,11 +40,13 @@ router.get("/api/products/image/:id/:index", async (req, res): Promise<void> => 
   } else {
     res.redirect(302, dataUrl);
   }
-});
+}
 
-// ── GET /api/broadcasts/image/:id ──────────────────────────────────────────────
-// Public — no auth. Used for broadcast image previews.
-router.get("/api/broadcasts/image/:id", async (req, res): Promise<void> => {
+router.get("/api/products/image/:id/:index", serveProductImage);
+router.get("/products/image/:id/:index",     serveProductImage);
+
+// ── Broadcast image handler ────────────────────────────────────────────────────
+async function serveBroadcastImage(req: import("express").Request, res: import("express").Response): Promise<void> {
   const id = Number(req.params["id"]);
   const [broadcast] = await db
     .select({ imageUrl: broadcastsTable.imageUrl })
@@ -60,16 +58,23 @@ router.get("/api/broadcasts/image/:id", async (req, res): Promise<void> => {
 
   const dataUrl = broadcast.imageUrl;
   if (dataUrl.startsWith("data:")) {
-    const [meta, b64] = dataUrl.split(",") as [string, string];
-    const mimeMatch   = meta.match(/data:([^;]+)/);
-    const mime        = mimeMatch?.[1] ?? "image/jpeg";
-    const buf         = Buffer.from(b64, "base64");
-    res.set("Content-Type", mime);
+    const [, b64] = dataUrl.split(",") as [string, string];
+    const raw = Buffer.from(b64, "base64");
+    let buf: Buffer;
+    try {
+      buf = await sharp(raw).jpeg({ quality: 85 }).toBuffer();
+    } catch {
+      buf = raw;
+    }
+    res.set("Content-Type", "image/jpeg");
     res.set("Cache-Control", "public, max-age=86400");
     res.send(buf);
   } else {
     res.redirect(302, dataUrl);
   }
-});
+}
+
+router.get("/api/broadcasts/image/:id", serveBroadcastImage);
+router.get("/broadcasts/image/:id",     serveBroadcastImage);
 
 export default router;

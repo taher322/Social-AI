@@ -1,6 +1,7 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import cors from "cors";
 import router from "./routes/index.js";
+import publicImagesRouter from "./routes/publicImages.js";
 import { authMiddleware } from "./middleware/authMiddleware.js";
 
 function buildAllowedOrigins(): string[] {
@@ -90,6 +91,7 @@ app.use(
 );
 app.use(express.urlencoded({ extended: true }));
 
+app.use(publicImagesRouter);
 app.use(authMiddleware);
 app.use("/api", apiRateLimit, router);
 
