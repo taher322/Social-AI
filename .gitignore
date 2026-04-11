@@ -1,7 +1,12 @@
 # See https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files for more about ignoring files.
 
 # compiled output
-dist
+# Note: artifacts/api-server/dist/ is intentionally NOT ignored — it is committed
+# so the production GCE deployment uses the pre-built bundle directly.
+/dist
+artifacts/dashboard/dist/
+artifacts/mockup-sandbox/dist/
+lib/*/dist/
 tmp
 out-tsc
 *.tsbuildinfo

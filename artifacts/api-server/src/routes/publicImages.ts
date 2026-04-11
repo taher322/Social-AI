@@ -25,17 +25,20 @@ router.get("/api/products/image/:id/:index", async (req, res): Promise<void> => 
   if (!dataUrl)           { res.status(404).end(); return; }
 
   if (dataUrl.startsWith("data:")) {
-    const [meta, b64] = dataUrl.split(",") as [string, string];
-    const mimeMatch   = meta.match(/data:([^;]+)/);
-    const mime        = mimeMatch?.[1] ?? "image/jpeg";
-    let   buf         = Buffer.from(b64, "base64");
+    const [, b64] = dataUrl.split(",") as [string, string];
+    const raw = Buffer.from(b64, "base64");
 
-    if (mime === "image/webp" || mime === "image/avif") {
-      buf = await sharp(buf).jpeg({ quality: 85 }).toBuffer();
-      res.set("Content-Type", "image/jpeg");
-    } else {
-      res.set("Content-Type", mime);
+    // Always convert to JPEG — Facebook Messenger requires JPEG for card images.
+    // This also handles images stored with a wrong mime prefix (e.g. declared as
+    // image/jpeg but actually WebP binary), which would cause broken images.
+    let buf: Buffer;
+    try {
+      buf = await sharp(raw).jpeg({ quality: 85 }).toBuffer();
+    } catch {
+      // sharp failed (unsupported format) — serve the raw buffer as-is
+      buf = raw;
     }
+    res.set("Content-Type", "image/jpeg");
     res.set("Cache-Control", "public, max-age=86400");
     res.send(buf);
   } else {
