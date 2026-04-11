@@ -73,7 +73,7 @@ router.get("/products/image/:id/:index", async (req, res): Promise<void> => {
 
     // Facebook Messenger لا يدعم WebP — نحوله إلى JPEG
     if (mime === "image/webp" || mime === "image/avif") {
-      buf = await sharp(buf).jpeg({ quality: 85 }).toBuffer();
+      buf = await sharp(buf).jpeg({ quality: 85 }).toBuffer() as Buffer<ArrayBuffer>;
       res.set("Content-Type", "image/jpeg");
     } else {
       res.set("Content-Type", mime);

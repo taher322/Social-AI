@@ -9,8 +9,10 @@ const router: IRouter = Router();
 // Registered on both /api/products/image/:id/:index and /products/image/:id/:index
 // to handle proxies that may or may not strip the /api prefix.
 async function serveProductImage(req: import("express").Request, res: import("express").Response): Promise<void> {
-  const id    = parseInt(req.params["id"]!,    10);
-  const index = parseInt(req.params["index"] ?? "0", 10);
+  const idParam    = Array.isArray(req.params["id"])    ? req.params["id"][0]!    : req.params["id"]!;
+  const indexParam = Array.isArray(req.params["index"]) ? req.params["index"][0]! : req.params["index"] ?? "0";
+  const id    = parseInt(idParam,    10);
+  const index = parseInt(indexParam, 10);
   if (Number.isNaN(id) || Number.isNaN(index)) { res.status(400).end(); return; }
 
   const [product] = await db

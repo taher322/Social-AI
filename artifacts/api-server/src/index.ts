@@ -317,15 +317,21 @@ async function start() {
   const server = http.createServer(async (req, res) => {
     const rawUrl  = req.url ?? "/";
     const urlPath = rawUrl.split("?")[0]!;
+    const method  = req.method ?? "UNKNOWN";
 
-    if ((urlPath === "/api/healthz" || urlPath === "/healthz") && req.method === "GET") {
+    // Log ALL incoming requests for debugging
+    if (urlPath.includes("image") || urlPath.includes("healthz")) {
+      console.log(`[raw-http] ${method} ${urlPath} | headers: x-forwarded-for=${req.headers["x-forwarded-for"] ?? "none"}`);
+    }
+
+    if ((urlPath === "/api/healthz" || urlPath === "/healthz") && method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end('{"status":"ok"}');
+      res.end('{"status":"ok","version":"v5-debug"}');
       return;
     }
 
     const productMatch = urlPath.match(/^\/api\/products\/image\/(\d+)\/(\d+)$/);
-    if (productMatch && req.method === "GET") {
+    if (productMatch && method === "GET") {
       try {
         const id    = parseInt(productMatch[1]!, 10);
         const index = parseInt(productMatch[2]!, 10);
@@ -380,7 +386,7 @@ async function start() {
 
   server.listen(port, () => {
     console.log(`[server] Listening on port ${port}`);
-    console.log("[server] v4-raw-http-healthz-webp");
+    console.log("[server] v5-debug-logging");
   });
 }
 

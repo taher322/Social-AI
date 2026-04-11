@@ -1,9 +1,8 @@
-import sharp from "sharp";
 import { db, productsTable, deliveryPricesTable, aiConfigTable, productCategoriesTable } from "@workspace/db";
 import { eq, and, or, isNull, sql } from "drizzle-orm";
-import { sendFbMessage, sendFbGenericTemplate } from "./ai.js";
+import { sendFbMessage, sendFbGenericTemplate, uploadDataUrlToFbCdn, sendFbImageFromDataUrl, sendFbButtonMessage } from "./ai.js";
 import { sendFbQuickReplies } from "./messengerUtils.js";
-import { getCatEmoji, buildCatFullPath, getAppBaseUrl } from "./webhookUtils.js";
+import { getCatEmoji, buildCatFullPath } from "./webhookUtils.js";
 import { ALGERIA_WILAYAS } from "../routes/deliveryPrices.js";
 
 // بناء جميع مقاطع المسار: "A/B/C" → ["A", "A/B", "A/B/C"]
@@ -189,33 +188,97 @@ export async function sendCatalogPage(
     return;
   }
 
-  const appUrl = getAppBaseUrl();
   const PLACEHOLDER = "https://placehold.co/400x400/f8fafc/94a3b8?text=No+Image";
 
+  // ── Build product cards ──────────────────────────────────────────────────────
+  // For each product, resolve the image URL:
+  //   1. If fbImageUrl cached → use it (Facebook CDN, public)
+  //   2. If data URL image → try to upload to Facebook CDN → cache → use
+  //   3. If external URL image → use directly
+  //   4. Fallback → placeholder (image will still show correctly from FB CDN)
+  //
+  // Products that fail CDN upload are sent as individual image+button messages.
+
+  type CardProduct = typeof matching[number] & { resolvedImageUrl: string };
+  const carouselProducts: CardProduct[] = [];
+  const individualProducts: CardProduct[] = [];
+
   for (const p of matching) {
-    if (!p.images) continue;
+    let resolvedImageUrl = PLACEHOLDER;
+
     try {
-      const imgs = JSON.parse(p.images) as string[];
-      const idx = p.mainImageIndex ?? 0;
-      const dataUrl = imgs[idx];
-      if (dataUrl?.startsWith("data:") && !dataUrl.startsWith("data:image/jpeg")) {
-        const [meta, b64] = dataUrl.split(",") as [string, string];
-        const mimeMatch = meta.match(/data:([^;]+)/);
-        const mime = mimeMatch?.[1] ?? "image/webp";
-        const raw = Buffer.from(b64, "base64");
-        const jpegBuf = await sharp(raw).jpeg({ quality: 85 }).toBuffer() as Buffer<ArrayBuffer>;
-        const jpegDataUrl = `data:image/jpeg;base64,${jpegBuf.toString("base64")}`;
-        imgs[idx] = jpegDataUrl;
-        await db.update(productsTable).set({ images: JSON.stringify(imgs) }).where(eq(productsTable.id, p.id));
-        p.images = JSON.stringify(imgs);
-        console.log(`[catalogFlow] Converted product ${p.id} image from ${mime} → jpeg before sending`);
+      // Check cached CDN URL first
+      if (p.fbImageUrl) {
+        resolvedImageUrl = p.fbImageUrl;
+      } else if (p.images) {
+        const imgs = JSON.parse(p.images) as string[];
+        const idx = p.mainImageIndex ?? 0;
+        const img = imgs[idx] ?? imgs[0];
+
+        if (img) {
+          if (img.startsWith("data:")) {
+            // Data URL: try upload to Facebook CDN
+            const cdnUrl = pageId
+              ? await uploadDataUrlToFbCdn(pageAccessToken, pageId, img).catch(() => null)
+              : null;
+
+            if (cdnUrl) {
+              resolvedImageUrl = cdnUrl;
+              // Cache for future use
+              await db.update(productsTable)
+                .set({ fbImageUrl: cdnUrl })
+                .where(eq(productsTable.id, p.id))
+                .catch(() => {/* non-critical */});
+              console.log(`[catalogFlow] Cached Facebook CDN URL for product ${p.id}`);
+            } else {
+              // CDN upload failed → send this product individually
+              const card: CardProduct = { ...p, resolvedImageUrl };
+              individualProducts.push(card);
+              continue;
+            }
+          } else {
+            // External URL → use directly
+            resolvedImageUrl = img;
+          }
+        }
       }
     } catch (e) {
-      console.warn("[catalogFlow] Image conversion failed for product", p.id, (e as Error).message);
+      console.warn("[catalogFlow] Image resolution failed for product", p.id, (e as Error).message);
+    }
+
+    carouselProducts.push({ ...p, resolvedImageUrl });
+  }
+
+  // ── Send individual products (data URL, CDN failed) ──────────────────────────
+  for (const p of individualProducts) {
+    try {
+      const imgs = JSON.parse(p.images ?? "[]") as string[];
+      const idx = p.mainImageIndex ?? 0;
+      const dataUrl = imgs[idx] ?? imgs[0];
+      if (dataUrl) {
+        await sendFbImageFromDataUrl(pageAccessToken, senderId, dataUrl, pageId);
+      }
+      const price    = p.discountPrice ?? p.originalPrice;
+      const priceStr = price ? `${price} دج` : "اتصل للسعر";
+      const isOutOfStock = (p.stockQuantity ?? 0) === 0;
+      await sendFbButtonMessage(
+        pageAccessToken, senderId,
+        `${p.name.substring(0, 60)}\n${priceStr}`,
+        [
+          { title: "📋 التفاصيل", payload: `DETAILS:${p.id}` },
+          isOutOfStock
+            ? { title: "⏳ طلب مسبق", payload: `PREORDER_START:${p.id}` }
+            : { title: "🛒 اطلب الآن", payload: `ORDER_NOW:${p.id}` },
+        ],
+        pageId
+      );
+    } catch (e) {
+      console.warn("[catalogFlow] Failed to send individual product", p.id, (e as Error).message);
     }
   }
 
-  const elements = matching.map((p) => {
+  // ── Send carousel for products with resolved image URLs ──────────────────────
+  const elements = carouselProducts.map((p) => {
     const price    = p.discountPrice ?? p.originalPrice;
     const priceStr = price ? `${price} دج` : "اتصل للسعر";
     const tierLabel: Record<string, string> = { budget: "💚", mid_range: "💛", premium: "💎" };
@@ -226,18 +289,6 @@ export async function sendCatalogPage(
     if (p.itemType)    subtitleParts.push(p.itemType);
     subtitleParts.push(`${tierIcon} ${priceStr}`.trim());
     if (p.description) subtitleParts.push(p.description.substring(0, 30));
-
-    let imageUrl = PLACEHOLDER;
-    if (p.images && appUrl) {
-      try {
-        const imgs = JSON.parse(p.images) as string[];
-        if (imgs.length > 0) {
-          imageUrl = `${appUrl}/api/products/image/${p.id}/${p.mainImageIndex ?? 0}?v=jpeg`;
-        }
-      } catch (e) {
-        console.warn("[catalogFlow] Failed to build image URL for product", p.id, (e as Error).message);
-      }
-    }
 
     const isOutOfStock = (p.stockQuantity ?? 0) === 0;
     const buttons: Array<
@@ -256,16 +307,19 @@ export async function sendCatalogPage(
     return {
       title:     p.name.substring(0, 80),
       subtitle:  subtitleParts.join(" | ").substring(0, 80),
-      image_url: imageUrl,
+      image_url: p.resolvedImageUrl,
       buttons,
     };
   });
 
-  if (elements.length > 1) {
-    await sendFbMessage(pageAccessToken, senderId, `وجدنا ${elements.length} منتج 👇 اسحب ← لرؤية جميعها:`, pageId);
+  const totalVisible = elements.length + individualProducts.length;
+  if (totalVisible > 1) {
+    await sendFbMessage(pageAccessToken, senderId, `وجدنا ${totalVisible} منتج 👇 اسحب ← لرؤية جميعها:`, pageId);
   }
 
-  await sendFbGenericTemplate(pageAccessToken, senderId, elements, pageId);
+  if (elements.length > 0) {
+    await sendFbGenericTemplate(pageAccessToken, senderId, elements, pageId);
+  }
 
   const hasMore = allMatching.length > offset + PAGE_SIZE;
   if (hasMore) {

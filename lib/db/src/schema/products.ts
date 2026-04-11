@@ -18,7 +18,8 @@ export const productsTable = pgTable("products", {
   itemType: text("item_type"),
   priceTier: text("price_tier"),
   externalUrl: text("external_url"),
-  folderId:   integer("folder_id"),
+  folderId:    integer("folder_id"),
+  fbImageUrl:  text("fb_image_url"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

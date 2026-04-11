@@ -109,6 +109,59 @@ export async function sendFbImageFromDataUrl(
   }
 }
 
+// ── Upload data URL image to Facebook CDN ────────────────────────────────────
+// Uploads an image to the page's photo album (unpublished) to get a CDN URL
+// that Facebook can use in generic template image_url without auth issues.
+// Requires pages_manage_posts or pages_read_user_content permission.
+// Returns CDN URL string on success, null on failure.
+export async function uploadDataUrlToFbCdn(
+  pageAccessToken: string,
+  pageId: string,
+  dataUrl: string,
+): Promise<string | null> {
+  try {
+    const [meta, b64] = dataUrl.split(",") as [string, string];
+    const mime = meta.match(/data:([^;]+)/)?.[1] ?? "image/jpeg";
+    let buf = Buffer.from(b64, "base64");
+
+    if (mime !== "image/jpeg" && mime !== "image/jpg") {
+      buf = await sharp(buf).jpeg({ quality: 85 }).toBuffer() as Buffer<ArrayBuffer>;
+    }
+
+    const form = new FormData();
+    form.append("source", new Blob([buf], { type: "image/jpeg" }), "product.jpg");
+    form.append("published", "false");
+
+    const uploadRes = await fetch(
+      `https://graph.facebook.com/v25.0/${pageId}/photos?access_token=${pageAccessToken}`,
+      { method: "POST", body: form }
+    );
+
+    if (!uploadRes.ok) {
+      const errText = await uploadRes.text().catch(() => "");
+      console.warn(`[fb-cdn] Photo upload failed: ${errText}`);
+      return null;
+    }
+
+    const uploadData = await uploadRes.json() as { id?: string };
+    const photoId = uploadData.id;
+    if (!photoId) return null;
+
+    const photoRes = await fetch(
+      `https://graph.facebook.com/v25.0/${photoId}?fields=images&access_token=${pageAccessToken}`
+    );
+    if (!photoRes.ok) return null;
+
+    const photoData = await photoRes.json() as { images?: Array<{ source: string; width: number }> };
+    const cdnUrl = photoData.images?.[0]?.source ?? null;
+    console.log(`[fb-cdn] Uploaded image, photoId=${photoId}, url=${cdnUrl ? cdnUrl.substring(0, 60) + "..." : "null"}`);
+    return cdnUrl;
+  } catch (err) {
+    console.warn("[fb-cdn] Error uploading to Facebook CDN:", err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
 export async function sendFbButtonMessage(
   pageAccessToken: string,
   recipientId: string,
