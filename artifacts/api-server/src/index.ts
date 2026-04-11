@@ -380,6 +380,7 @@ async function start() {
 
   server.listen(port, () => {
     console.log(`[server] Listening on port ${port}`);
+    console.log("[server] v4-raw-http-healthz-webp");
   });
 }
 
