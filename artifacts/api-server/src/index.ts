@@ -1,4 +1,6 @@
-import { pool, db, aiProvidersTable, aiConfigTable, productInquiriesTable, fbSettingsTable, conversationsTable, broadcastsTable, leadsTable, platformEventsTable, processedMessagesTable } from "@workspace/db";
+import http from "http";
+import sharp from "sharp";
+import { pool, db, aiProvidersTable, aiConfigTable, productInquiriesTable, fbSettingsTable, conversationsTable, broadcastsTable, leadsTable, platformEventsTable, processedMessagesTable, productsTable } from "@workspace/db";
 import { eq, and, sql, lte, lt } from "drizzle-orm";
 import app from "./app.js";
 import { runSeed } from "./lib/seed.js";
@@ -278,7 +280,83 @@ async function start() {
   setInterval(runPlatformEventsCleanup, 24 * 60 * 60 * 1000);
   console.log("[server] Platform events cleanup job scheduled (every 24h, keeps last 30 days)");
 
-  app.listen(port, () => {
+  const server = http.createServer(async (req, res) => {
+    const rawUrl  = req.url ?? "/";
+    const urlPath = rawUrl.split("?")[0]!;
+
+    const productMatch = urlPath.match(/^\/api\/products\/image\/(\d+)\/(\d+)$/);
+    if (productMatch && req.method === "GET") {
+      try {
+        const id    = parseInt(productMatch[1]!, 10);
+        const index = parseInt(productMatch[2]!, 10);
+        const [product] = await db
+          .select({ images: productsTable.images })
+          .from(productsTable)
+          .where(eq(productsTable.id, id))
+          .limit(1);
+        if (!product?.images) { res.writeHead(404); res.end(); return; }
+        const imgs    = JSON.parse(product.images) as string[];
+        const dataUrl = imgs[index] ?? imgs[0];
+        if (!dataUrl) { res.writeHead(404); res.end(); return; }
+        if (dataUrl.startsWith("data:")) {
+          const [, b64] = dataUrl.split(",") as [string, string];
+          const raw = Buffer.from(b64, "base64");
+          let buf: Buffer;
+          try { buf = await sharp(raw).jpeg({ quality: 85 }).toBuffer(); }
+          catch { buf = raw; }
+          res.writeHead(200, {
+            "Content-Type":  "image/jpeg",
+            "Cache-Control": "public, max-age=86400",
+          });
+          res.end(buf);
+        } else {
+          res.writeHead(302, { Location: dataUrl });
+          res.end();
+        }
+      } catch (err) {
+        console.error("[image-server] product image error:", err);
+        res.writeHead(500); res.end();
+      }
+      return;
+    }
+
+    const broadcastMatch = urlPath.match(/^\/api\/broadcasts\/image\/(\d+)$/);
+    if (broadcastMatch && req.method === "GET") {
+      try {
+        const id = parseInt(broadcastMatch[1]!, 10);
+        const [broadcast] = await db
+          .select({ imageUrl: broadcastsTable.imageUrl })
+          .from(broadcastsTable)
+          .where(eq(broadcastsTable.id, id))
+          .limit(1);
+        if (!broadcast?.imageUrl) { res.writeHead(404); res.end(); return; }
+        const dataUrl = broadcast.imageUrl;
+        if (dataUrl.startsWith("data:")) {
+          const [, b64] = dataUrl.split(",") as [string, string];
+          const raw = Buffer.from(b64, "base64");
+          let buf: Buffer;
+          try { buf = await sharp(raw).jpeg({ quality: 85 }).toBuffer(); }
+          catch { buf = raw; }
+          res.writeHead(200, {
+            "Content-Type":  "image/jpeg",
+            "Cache-Control": "public, max-age=86400",
+          });
+          res.end(buf);
+        } else {
+          res.writeHead(302, { Location: dataUrl });
+          res.end();
+        }
+      } catch (err) {
+        console.error("[image-server] broadcast image error:", err);
+        res.writeHead(500); res.end();
+      }
+      return;
+    }
+
+    app(req, res);
+  });
+
+  server.listen(port, () => {
     console.log(`[server] Listening on port ${port}`);
   });
 }
